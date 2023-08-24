@@ -1,0 +1,306 @@
+---
+title: "Simulate 1st wave"
+---
+
+```{r}
+here::i_am("code/simulations/simulate_wave1.Rmd")
+source(here::here("code", "utils", "utils.R"))
+source(here::here("code", "utils", "utils_simulate.R"))
+library(extraDistr)
+library(plotly)
+library(tibble)
+library(dplyr)
+library(tidyr)
+```
+
+```{r}
+n_realizations <- 50
+```
+
+## Generation time distribution
+```{r}
+maxGen <- 21
+gen_wildtype <- get_discrete_gamma(gamma_mean = 4.9, gamma_sd = 4.1, maxX = maxGen, include_zero = F)
+
+generation_dist <- rbind(
+  # initial infections (length maxGen)
+  get_distribution_time_series(
+    tribble_format = tribble(
+      ~changepoints, ~pmf_list,
+      1, gen_wildtype,
+      maxGen, gen_wildtype
+    )
+  ),
+  # modeled infections
+  get_distribution_time_series(
+    tribble_format = tribble(
+      ~changepoints, ~pmf_list,
+      1, gen_wildtype,
+      260, gen_wildtype
+    )
+  )
+)
+plot_dist_ts(generation_dist, ylab = "Generation time")
+plot_scalar_ts(dist_get_mean(generation_dist))
+```
+
+## Incubation period distribution
+```{r}
+maxInc <- 21
+inc_wildtype <- get_discrete_gamma(gamma_mean = 5.3, gamma_sd = 3.2, maxX = maxInc)
+
+incubation_dist <- get_distribution_time_series(
+  tribble_format = tribble(
+    ~changepoints, ~pmf_list,
+    1, inc_wildtype,
+    260, inc_wildtype
+  )
+)
+plot_dist_ts(incubation_dist, ylab = "Incubation time")
+plot_scalar_ts(dist_get_mean(incubation_dist))
+```
+
+## Initial infections
+```{r}
+initial_infections <- replicate(n_realizations, rpois(maxGen, 0.5), simplify = F)
+plot_scalar_ts(ts = initial_infections[[3]], ylab = "Initial infections", xlab = "Pre-time")
+```
+
+## Reproduction number
+```{r}
+R <- get_scalar_time_series(tribble_format = tribble(
+  ~changepoints, ~scalars,
+  1, 2,
+  70, 2,
+  80, 0.8,
+  150, 0.8,
+  160, 0.8,
+  200, 0.8,
+))
+plot_scalar_ts(R, ylab = "Effective reproduction number")
+```
+
+## Infection trajectory
+```{r}
+set.seed(0)
+infections <- list() 
+for (i in 1:n_realizations) {
+  print(paste("Simulate realization",i))
+  inf_sim <- simulate_infections(initial_infections[[i]], R, generation_dist)
+  infections[[i]] <- inf_sim
+  print(paste("Maximum number of infections:", max(inf_sim[["I"]])))
+}
+(qplot(y=infections[[1]][["I"]]) + geom_line(y=infections[[1]][["I_expected"]]) + ylab("Infections") + theme_bw())
+```
+
+## Probability of symptom onsets to be known (converse of missingness probability)
+```{r}
+# roughly between 40% and 80% (i.e. 20%-60% missingness)
+onset_known_prob <- replicate(n_realizations, get_scalar_time_series(changepoints = seq(1,300,by=28), scalars= 0.4 + 0.4*plogis(cumsum(rnorm(length(seq(1,300,by=28)),0,0.5)))), simplify = F)
+
+plot_scalar_ts(onset_known_prob[[2]], ylab = "Share of known symptom onsets", xlab = "Time") + coord_cartesian(ylim=c(0.35,0.85))
+```
+
+## Hospitalization delay distribution (symptom onset to hospitalization)
+Only relevant if nowcasting by date of hospitalization instead of symptom onset
+```{r}
+maxSympToHosp <- 25
+symp_to_hosp_dist <- get_distribution_time_series(
+  tribble_format = tribble(
+    ~changepoints, ~pmf_list,
+    1, get_discrete_lognormal(0.8, 0.3, maxX = maxSympToHosp),
+    60, get_discrete_lognormal(0.9, 0.325, maxX = maxSympToHosp),
+    200, get_discrete_lognormal(0.8, 0.35, maxX = maxSympToHosp),
+    220, get_discrete_lognormal(0.9, 0.3, maxX = maxSympToHosp),
+    355, get_discrete_lognormal(0.95, 0.4, maxX = maxSympToHosp),
+  )
+)
+plot_scalar_ts(dist_get_mean(symp_to_hosp_dist), ylab = "Mean delay")
+plot_dist_ts(symp_to_hosp_dist, ylab = "Time from symptom onset to hospitalization")
+plot(symp_to_hosp_dist[10, ])
+```
+
+## Reporting delay distribution (symptom onset to report)
+```{r}
+base_p <- get_discrete_lognormal(unit_mean = 9, unit_sd = 8, maxX = 7*14) # in line with real Swiss data
+
+data.frame(p = base_p) %>%
+  mutate(delay = 0:(n() - 1)) %>%
+  ggplot(aes(x = delay, y = p)) +
+  geom_bar(stat = "identity") +
+  theme_bw()
+data.frame(p = base_p) %>%
+  mutate(delay = 0:(n() - 1)) %>%
+  ggplot(aes(x = delay, y = cumsum(p))) +
+  geom_bar(stat = "identity") +
+  theme_bw()
+
+symp_to_rep_dist <- replicate(n_realizations, get_p_time_series(
+  qlogis(get_hazard_from_p(base_p)),
+  changepoints = seq(1,300,by=28),
+  scalars = -0.3 + 0.6*plogis(cumsum(rnorm(length(seq(1,300,by=28)),0,0.5))),
+  rep_seasonality = c(0.1, 0.05, 0, 0, 0, -0.7, -0.8)
+), simplify = F)
+
+plot_scalar_ts(dist_get_mean(symp_to_rep_dist[[1]]), ylab = "Mean delay")
+
+data.frame(p = symp_to_rep_dist[[1]][1, ]) %>%
+  mutate(delay = 0:(n() - 1)) %>%
+  ggplot(aes(x = delay, y = p)) +
+  geom_bar(stat = "identity") +
+  theme_bw()
+data.frame(p = symp_to_rep_dist[[1]][100, ]) %>%
+  mutate(delay = 0:(n() - 1)) %>%
+  ggplot(aes(x = delay, y = p)) +
+  geom_bar(stat = "identity") +
+  theme_bw()
+data.frame(p = symp_to_rep_dist[[1]][153, ]) %>%
+  mutate(delay = 0:(n() - 1)) %>%
+  ggplot(aes(x = delay, y = p)) +
+  geom_bar(stat = "identity") +
+  theme_bw()
+plot_dist_ts(symp_to_rep_dist[[1]], ylab = "Time from symptom onset to reporting")
+```
+
+```{r, fig.width = 10, fig.height = 7}
+plot1 <- bind_rows(list(
+  "1" = data.frame(p = symp_to_rep_dist[[3]][1, ]) %>% mutate(delay = 0:(n() - 1)),
+  "60" = data.frame(p = symp_to_rep_dist[[3]][60, ]) %>% mutate(delay = 0:(n() - 1)),
+  "244" = data.frame(p = symp_to_rep_dist[[3]][244, ]) %>% mutate(delay = 0:(n() - 1))), .id = "timepoint"
+  ) %>%
+  mutate(timepoint = as.integer(timepoint)) %>% 
+  arrange(timepoint) %>% 
+  mutate(timepoint = forcats::fct_inorder(format(timepoint - 1 + as.Date(0), "%B %d"), ordered = T)) %>% 
+  ggplot(aes(x = delay, y = p)) +
+  geom_bar(stat = "identity", position = "dodge", fill = "darkgrey") +
+  theme_bw() +
+  theme(legend.position = "none", strip.background = element_blank(), strip.text = element_text(hjust = 0)) +
+  scale_x_continuous(expand = c(0,0)) +
+  scale_y_continuous(expand = expansion(add=c(0,0.01))) +
+  coord_cartesian(xlim = c(0,55)) + facet_wrap(~timepoint) +
+  ggsci::scale_fill_npg() +
+  xlab("Forward reporting delay [days]") + ylab("PMF")
+
+plot2 <- data.frame(mean_dist = dist_get_mean(symp_to_rep_dist[[3]])) %>% mutate(date = as.Date(0) + (0:(n()-1))) %>% 
+  ggplot(aes(x=date, y = mean_dist)) + geom_line() +
+  scale_x_date(expand = c(0,0)) +
+    theme_bw() +
+  xlab("Date") + ylab("Mean forward reporting delay [days]")
+
+cowplot::plot_grid(plot2, plot1, rel_heights = c(1,1), labels = "AUTO", ncol = 1)
+
+ggsave(here::here("figures","paper","sim_example_delay_dists.pdf"), width = 10, height = 7)
+```
+
+## Ascertainment / reporting proportion
+```{r}
+hosp_to_rep_dist <- NULL
+hosp_prob = c(rep(0.02, 200))
+```
+
+## Simulate
+```{r}
+cases <- lapply(1:n_realizations,function(i) simulate_outcomes_cases(infections[[i]][["I"]], incubation_dist, hosp_prob, symp_to_hosp_dist))
+cases <- lapply(1:n_realizations,function(i) simulate_ascertainment_cases(cases[[i]], onset_known_prob[[i]], symp_to_rep_dist[[i]], hosp_to_rep_dist))
+```
+
+```{r}
+sim_def <- lapply(1:n_realizations, function(i) define_simulation(
+  initial_infections = initial_infections[[i]],
+  R = R,
+  generation_dist = generation_dist,
+  incubation_dist = incubation_dist,
+  hosp_prob = hosp_prob,
+  symp_to_hosp_dist = symp_to_hosp_dist,
+  onset_known_prob = onset_known_prob[[i]],
+  symp_to_rep_dist = symp_to_rep_dist[[i]],
+  hosp_to_rep_dist = hosp_to_rep_dist
+))
+
+sim <- list()
+for (i in 1:n_realizations) {
+  process_summary <- summarize_linelist(cases[[i]], 1:length(infections[[i]][["I"]]))
+  process_summary[["infections"]] <- infections[[i]][["I"]]
+  process_summary[["infections_expected"]] <- infections[[i]][["I_expected"]]
+  process_summary[["t_onset"]] <- 1:(length(infections[[i]][["I"]]) + ncol(incubation_dist) - 1)
+  sim[[i]] <- list(parameters = sim_def[[i]], linelist = cases[[i]], process_summary = process_summary)
+}
+
+```
+
+```{r}
+saveRDS(sim, here::here("data", "simulated", "sim_wave1.rds"))
+```
+
+```{r}
+sim <- readRDS(here::here("data", "simulated", "sim_wave1.rds"))
+```
+
+## Inspect simulation results
+```{r}
+sim_index <- 1
+(sim[[sim_index]][["linelist"]] %>%
+  ggplot() +
+  geom_line(data = sim[["linelist"]], aes(x = infection_time), stat = "count", color = "orange") +
+  geom_line(data = sim[["linelist"]], aes(x = onset_time), stat = "count", color = "red") +
+  geom_line(data = sim[[sim_index]][["linelist"]] %>% filter(onset_known), aes(x = onset_time), stat = "count", color = "red", linetype = "dashed") +
+  geom_line(aes(x = hosp_time), stat = "count", color = "blue") +
+  geom_line(data = sim[[sim_index]][["linelist"]] %>% filter(onset_known), aes(x = hosp_time), stat = "count", color = "blue", linetype = "dashed") +
+  geom_line(aes(x = rep_time), stat = "count", color = "black") +
+  geom_line(data = sim[[sim_index]][["linelist"]] %>% filter(onset_known), aes(x = rep_time), stat = "count", color = "black", linetype = "dashed") +
+  theme_bw() +
+  xlab("Time") +
+  ylab("Count") +
+  scale_x_continuous(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(0, max(sim[[sim_index]][["linelist"]]$infection_time))))
+```
+
+```{r, fig.width = 10, fig.height = 5}
+sim_index <- 1
+sim[[sim_index]][["linelist"]] %>%
+    pivot_longer(cols = c(infection_time, onset_time, hosp_time, rep_time), names_to = "Event", values_to = "time") %>% 
+    count(Event, time) %>% mutate(Event = recode_factor(Event,
+                                               infection_time = "Infection",
+                                               onset_time = "Symptom onset",
+                                               hosp_time = "Hospitalisation",
+                                               rep_time = "Report", .ordered = T)) %>% 
+  filter(Event != "Hospitalisation") %>% 
+  group_by(Event) %>% 
+  complete(time = 0:200, fill = list(n = 0)) %>% 
+  mutate(time = as.Date(0) + time) %>% 
+  ggplot() +
+  geom_line(aes(x = time, y = n, color = Event)) +
+  theme_bw() +
+  theme(legend.position = "none", strip.background = element_blank(), strip.text = element_text(hjust = 0)) +
+  xlab("Date") +
+  ylab("Number of cases") +
+  scale_x_date(expand = c(0, 0)) +
+  scale_color_manual(values = c("red", "blue", "black")) +
+  coord_cartesian(xlim = as.Date(0) + c(30, 200)) +
+  facet_wrap(~Event, ncol = 1)
+
+ggsave(here::here("figures", "paper", "sim_wave1_example_trajectory.pdf"), width = 10, height = 5)
+```
+
+
+```{r}
+sim_index <- 1
+# before peak, at peak, after peak, control
+nowcasting_dates <- c(73, 83, 104, 135)
+
+plot_scalar_ts(sim[[sim_index]]$parameters$R, ylab = "Effective reproduction number") +
+  geom_vline(data=data.frame(x=nowcasting_dates), aes(xintercept=x), linetype="dashed") +
+geom_vline(data=data.frame(x=nowcasting_dates-7), aes(xintercept=x), linetype="dashed", linewidth = 0.2, color = "blue")
+
+sim[[sim_index]][["linelist"]] %>%
+  ggplot() +
+  geom_line(aes(x = onset_time), stat = "count", color = "blue") +
+  theme_bw() +
+  xlab("Time") +
+  ylab("Count") +
+  scale_x_continuous(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(0, max(sim[[sim_index]][["linelist"]]$infection_time)), ylim = c(0, NA)) +
+   geom_vline(data=data.frame(x=nowcasting_dates), aes(xintercept=x), linetype="dashed")
+```
+
+
