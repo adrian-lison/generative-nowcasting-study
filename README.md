@@ -1,5 +1,7 @@
 # Generative Bayesian modeling to nowcast the effective reproduction number from line list data with missing symptom onset dates
 
+[![DOI](https://zenodo.org/badge/681616817.svg)](https://zenodo.org/badge/latestdoi/681616817)
+
 Adrian Lison (1,2), Sam Abbott (3), Jana Huisman (4), and Tanja Stadler (1,2)
 
 (1) ETH Zurich, Department of Biosystems Science and Engineering, Zurich, Switzerland\
