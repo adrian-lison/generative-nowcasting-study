@@ -1,0 +1,380 @@
+---
+title: "Linelist"
+---
+# Preparation
+## Setup
+```{r, message=FALSE, include=FALSE}
+here::i_am("code/nowcast_switzerland_hosp_symp.Rmd")
+source(here::here("code", "utils", "setup.R"))
+source(here::here("code", "utils", "utils_job.R"))
+source(here::here("code", "utils", "utils_cluster.R"))
+source(here::here("code", "utils", "utils_simulate.R"))
+```
+
+## Data loading
+Line list data are available under terms of data protection upon request from the Swiss Federal Office of Public Health (FOPH).
+```{r}
+# get the preprocessed data
+prep_data <- readRDS(here::here("data", "preprocessed", paste0("prep_symp-rep_", "DPTv2", ".rds")))
+latest_date <- prep_data %>% pull(event2_date) %>% max()
+earliest_date <- prep_data %>% pull(event2_date) %>% min()
+print(paste("Using data until", latest_date))
+```
+
+## Exploratory analysis
+
+### Case counts
+Comparison of cases with known and missing symptom onset date
+```{r, fig.width = 10. fig.height = 6}
+(prep_data %>%
+  mutate(so = factor(ifelse(!is.na(event1_date), "Known", "Missing"),
+                     levels = c("Missing", "Known"), ordered = T)) %>%
+  ggplot(aes(x = event2_date, fill = so)) +
+  geom_bar(position = "stack") +
+  theme_bw() +
+  xlab("Date of report") +
+  ylab("Case count") +
+  scale_fill_manual(values = c("#d9d9d9", "#999999"), name = "Symptom onset") +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_x_date(date_breaks = "4 month", expand = c(0, 0)) +
+  coord_cartesian(xlim = as.Date(c("2020-03-01", "2021-03-31"))) +
+  theme(legend.position = "top"))
+
+ggsave(here::here("figures", "paper", "switzerland_date_of_report.pdf"), height = 5, width = 10)
+```
+
+### Reporting delay
+
+Empirical delay and maximum delay
+```{r}
+(prep_data %>%
+  mutate(delay = as.integer(event2_date - event1_date)) %>%
+  count(delay) %>%
+  filter(!is.na(delay), delay >= 0) %>%
+  mutate(p = n / sum(n)) %>%
+  ggplot(aes(x = delay, y = p)) +
+  geom_col() +
+  geom_vline(xintercept = c(7 * 8, 7 * 12), color = "red") +
+  scale_y_continuous(labels = scales::percent) +
+  coord_cartesian(xlim = c(0, 200)) +
+  theme_bw() +
+  ggtitle("Reporting delay distribution"))
+
+(prep_data %>%
+  mutate(delay = as.integer(event2_date - event1_date)) %>%
+  count(delay) %>%
+  filter(!is.na(delay), delay >= 0) %>%
+  mutate(p = cumsum(n / sum(n))) %>%
+  ggplot(aes(x = delay, y = p)) +
+  geom_col() +
+  geom_vline(xintercept = c(7 * 8, 7 * 12), color = "red") +
+  scale_y_continuous(labels = scales::percent) +
+  coord_cartesian(xlim = c(0, 200)) +
+  theme_bw() +
+  ggtitle("Cumulative reporting delay distribution"))
+
+print(paste0("A reporting delay of 8 weeks covers ", prep_data %>% mutate(delay = event2_date - event1_date) %>% summarize(100 * sum(delay <= 7 * 8, na.rm = T) / sum(!is.na(delay))) %>% pull() %>% round(2), "% of cases."))
+```
+
+Empirical reporting delay in different periods
+```{r}
+pre_data_periods <- prep_data %>%
+  mutate(delay = event2_date - event1_date) %>%
+  filter(
+    event1_date >= "2020-03-01",
+    event1_date <= "2021-03-31",
+    wday(event1_date, label = T) == "Mon"
+  ) %>%
+  mutate(period = ifelse(event1_date < "2020-06-01",
+    "March 1, 2020 - May 31, 2020",
+    ifelse(event1_date < "2020-10-01",
+      "June 1, 2020 - Sep 31, 2020",
+      "Oct 1, 2020 - March 31, 2021"
+    )
+  )) %>%
+  mutate(period = factor(period,
+    levels = c(
+      "March 1, 2020 - May 31, 2020",
+      "June 1, 2020 - Sep 31, 2020",
+      "Oct 1, 2020 - March 31, 2021"
+    ), ordered = T
+  )) %>%
+  group_by(period)
+
+(pre_data_periods %>%
+  count(delay) %>%
+  filter(!is.na(delay), delay >= 0) %>%
+  mutate(p = n / sum(n)) %>%
+  ggplot(aes(x = delay, y = p)) +
+  geom_col(fill = "darkgrey") +
+  geom_vline(xintercept = c(7 * 8, 7 * 12), color = "red") +
+  theme_bw() +
+  theme(
+    legend.position = "none",
+    strip.background = element_blank(),
+    strip.text = element_text(hjust = 0)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = expansion(add = c(0, 0.01))) +
+  coord_cartesian(xlim = c(0, 55)) +
+  facet_wrap(~period) +
+  ggsci::scale_fill_npg() +
+  xlab("Empirical forward reporting delay [days] on Mondays") +
+  ylab("PMF"))
+
+ggsave(here::here("figures", "paper", "switzerland_empirical_delay.pdf"), height = 3, width = 10)
+```
+
+Corresponding delay statistics in different periods
+```{r}
+pre_data_periods %>%
+  filter(delay < 7 * 8) %>%
+  summarize(across(delay, list(mean = mean,
+                               median = median,
+                               sd = sd), na.rm = T)) %>%
+  mutate(across(starts_with("delay"), round, 2))
+```
+
+Mean empirical delay over time
+```{r}
+(prep_data %>%
+  filter(!is.na(event1_date)) %>% 
+  mutate(delay = as.integer(event2_date - event1_date)) %>% 
+  group_by(event2_date) %>% summarize(mean_delay = mean(delay)) %>% 
+  ggplot(aes(x = event2_date, y=mean_delay)) +
+  geom_point() +
+  geom_smooth(method = "loess", formula = y ~ x, span = 2) +
+  theme_bw())
+```
+
+### Missing symptom onset date statistics
+```{r}
+prep_data_raw <- readRDS(here::here("data", "preprocessed", paste0("prep_symp-rep_", "DPTv2_raw", ".rds")))
+
+# number of cases with negative delay (will be set to missing for nowcasting)
+prep_data_raw %>% 
+  mutate(delay = as.integer(event2_date - event1_date)) %>% 
+  filter(!is.na(delay)) %>% 
+  count(delay<0) %>%
+  mutate(p = n/sum(n))
+
+# overall number of cases
+prep_data_raw %>%
+  filter(event2_date <= "2021-03-31") %>%
+  count()
+
+# count missing / not missing
+prep_data_raw %>%
+  filter(event2_date <= "2021-03-31") %>%
+  count(is.na(event1_date)) %>%
+  mutate(p = n/sum(n))
+
+# Plot with alpha over time
+(prep_data_raw %>%
+    filter(event2_date <= "2021-03-31") %>% 
+    count(event2_date,missing=is.na(event1_date)) %>% 
+    group_by(event2_date) %>%
+    summarize(alpha = 1-sum(missing*n)/sum(n)) %>% 
+  ggplot(aes(x = event2_date, y=alpha)) +
+  geom_point() +
+    geom_smooth(method = "loess", formula = y ~ x) +
+    tidyquant::geom_ma(n = 14, size = 1, linetype = "solid", color = "red") +
+    theme_bw() +
+    xlab("Date of report") +
+    ylab("Share of known onset dates") +
+    scale_y_continuous(n.breaks = 20, labels = scales::percent, limits = c(0, NA), expand = c(0,0))
+  )
+
+# Missing by moving average over week
+df <- prep_data_raw %>%
+  filter(event2_date <= "2021-03-31") %>% 
+  group_by(event2_date) %>% 
+  summarize(nmissing=sum(is.na(event1_date)), nall=n(), .groups = "drop") %>% 
+  arrange(event2_date)
+
+summary(as.vector(
+  zoo(df[,c("nmissing","nall")], order.by = df$event2_date) %>% 
+  zoo::rollapply(width = 7,
+                 FUN = function(x) sum(x[,"nmissing"])/sum(x[,"nall"]),
+                 by.column = F,
+                 align = "left")
+  ))
+```
+
+# Nowcasting
+
+Define incubation period and generation interval distribution over time
+```{r}
+source(here::here("code", "config_epi_params.R"))
+plot_dist_ts_quantiles(latent_delay_dist_all) + ggtitle("Incubation period")
+plot_dist_ts_quantiles(generation_time_dist_all) + ggtitle("Generation time")
+```
+
+Define nowcast dates / windows
+```{r}
+now <- seq.Date(as.Date("2021-03-31"), as.Date("2020-03-01"), by = "-1 day")
+start_date <- now - 7 * 4 * 3 # cover last 3 months 
+if(length(now)==1) print(paste0("Covering the period from ", start_date, " to ", now, "."))
+
+# select relevant delay dists
+latent_delay_dist_list <- latent_delay_dist_all_list[as.Date(names(latent_delay_dist_all_list)) %in% now]
+generation_time_dist_list <- generation_time_dist_all_list[as.Date(names(generation_time_dist_all_list)) %in% now]
+
+stopifnot(length(now)==length(latent_delay_dist_list))
+```
+
+## Job definition
+Create nowcast job(array)
+-- shared settings
+```{r}
+source(here::here("code", "utils", "setup.R"))
+
+data_def <- define_data(list(prep_data), now, start_date, holidays = holidays_CHE)
+
+sampling_def <- define_sampling(
+  iter_warmup = 1000,
+  iter_sampling = 1000,
+  chains = 4,
+  parallel_chains = 4,
+  adapt_delta = 0.999,
+  step_size = 0.01,
+  max_treedepth = 15,
+  inits_function = default_inits,
+  refresh = 200,
+  show_messages = T,
+  temp_save = F,
+  seed = 2)
+
+output_def <- define_output(
+  stan_data_list = FALSE,
+  stan_prep_info = FALSE,
+  priors = FALSE,
+  fit = FALSE,
+  delays = FALSE,
+  overwrite = TRUE,
+  posterior_nowcast = TRUE,
+  posterior_R = TRUE,
+  R_generative = TRUE, 
+)
+```
+
+Fully stepwise approach
+```{r}
+model_def <- define_model(
+  model_type = "impute_then_adjust",
+  D = 7*8, # --> 8 weeks
+  delay_changepoint = "segmented",
+  n_lambda_pre = 0,
+  overdispersion = TRUE,
+  ts_model = "ets",
+  sma_window = 0,
+  ets_diff = FALSE,
+  ets_noncentered = TRUE,
+  profile = TRUE,
+  threads = FALSE,
+  force_recompile = FALSE)
+
+prior_def <- define_priors(
+  model_def,
+  dirichlet_prior = FALSE,
+  ets_alpha_fixed = 1,
+  ets_beta_fixed = 1,
+  ets_phi_fixed = 0,
+  latent_delay_dist = latent_delay_dist_list,
+  generation_time_dist = generation_time_dist_list,
+  reporting_proportion = 0.02,
+  alpha_logit_start = get_prior("alpha_logit_start", mu = 0, sd = 2)
+  )
+
+nowcast_job <- define_job(job_name = "real_fully_stepwise", data_def = data_def, model_def = model_def, prior_def = prior_def, sampling_def = sampling_def, output_def = output_def, index_by_date = T)
+saveRDS(nowcast_job, here::here("results", "real_fully_stepwise", "real_fully_stepwise.rds"))
+```
+
+Fully generative approach
+```{r}
+model_def <- define_model(
+  model_type = "impute_adjust_renewal",
+  D = 7*8, # --> 8 weeks
+  delay_changepoint = "segmented",
+  n_lambda_pre = 0,
+  overdispersion = TRUE,
+  ts_model = "ets",
+  sma_window = 0,
+  ets_diff = FALSE,
+  ets_noncentered = TRUE,
+  profile = TRUE,
+  threads = FALSE,
+  force_recompile = FALSE)
+
+prior_def <- define_priors(
+  model_def,
+  dirichlet_prior = FALSE,
+  ets_alpha_fixed = 1,
+  ets_beta_fixed = 1,
+  ets_phi_fixed = 0,
+  latent_delay_dist = latent_delay_dist_list,
+  generation_time_dist = generation_time_dist_list,
+  reporting_proportion = 0.02,
+  alpha_logit_start = get_prior("alpha_logit_start", mu = 0, sd = 2),
+  R_level_start = get_prior("R_level_start", mu = 2, sd = 0.8)
+  )
+
+nowcast_job <- define_job(job_name = "real_fully_generative", data_def = data_def, model_def = model_def, prior_def = prior_def, sampling_def = sampling_def, output_def = output_def, index_by_date = T)
+saveRDS(nowcast_job, here::here("results", "real_fully_generative", "real_fully_generative.rds"))
+```
+
+Direct Rt estimation approach
+```{r}
+model_def <- define_model(
+  model_type = "renewal_direct",
+  D = 7*8, # --> 8 weeks
+  delay_changepoint = "segmented",
+  n_lambda_pre = 0,
+  overdispersion = TRUE,
+  ts_model = "ets",
+  sma_window = 0,
+  ets_diff = FALSE,
+  ets_noncentered = TRUE,
+  profile = TRUE,
+  threads = FALSE,
+  force_recompile = FALSE)
+
+prior_def <- define_priors(
+  model_def,
+  dirichlet_prior = FALSE,
+  ets_alpha_fixed = 1,
+  ets_beta_fixed = 1,
+  ets_phi_fixed = 0,
+  latent_delay_dist = latent_delay_dist_list,
+  generation_time_dist = generation_time_dist_list,
+  reporting_proportion = 0.02,
+  alpha_logit_start = get_prior("alpha_logit_start", mu = 0, sd = 2),
+  R_level_start = get_prior("R_level_start", mu = 2, sd = 0.8)
+  )
+
+nowcast_job <- define_job(job_name = "real_direct", data_def = data_def, model_def = model_def, prior_def = prior_def, sampling_def = sampling_def, output_def = output_def, index_by_date = T)
+saveRDS(nowcast_job, here::here("results", "real_direct", "real_direct.rds"))
+```
+
+## Running jobs
+
+The nowcasting job arrays are stored in the "results" folder. Running all the jobs likely requires an HPC cluster. 
+To run a job locally, first load the job array:
+```{r}
+jobname <- "real_direct"
+jobarray <- readRDS(here::here("results", jobname, paste0(jobname, ".rds")))
+```
+
+Then run one of the jobs from the array:
+```{r}
+jobid <- 1
+nowcast_result <- make_nowcast_from_job(jobarray, jobid)
+```
+
+Then save the result in a corresponding result file:
+```{r}
+output_filepath <- here::here(
+  "results", jobname, paste0(jobname, "_", jobid, "_result", ".rds"))
+print(paste("Saving results to", output_filepath))
+saveRDS(nowcast_result, output_filepath)
+```

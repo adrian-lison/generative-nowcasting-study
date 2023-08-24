@@ -1,0 +1,368 @@
+---
+title: "Evaluation of nowcasting results on synthetic data"
+---
+# Preparation
+```{r, message=F, output=F}
+here::i_am("code/validation_synthetic.Rmd")
+source(here::here("code", "utils", "setup.R"))
+source(here::here("code", "utils", "utils_simulate.R"))
+```
+
+## Select wave
+Please run either of the two chunks below to evaluate results for the first or second wave, respectively.
+
+1st wave
+```{r}
+list_of_sources <- list(
+  R_direct = "wave1_R_direct",
+  R_stepwise = "wave1_R_stepwise",
+  R_generative = "wave1_R_generative",
+  miss_stepwise = "wave1_miss_stepwise",
+  miss_stepwise_independent = "wave1_miss_stepwise_independent",
+  miss_generative = "wave1_miss_generative",
+  R_stepwise_ets = "wave1_R_stepwise_ets",
+  R_generative_ets = "wave1_R_generative_ets"
+)
+ground_truth_sim <- readRDS(here::here("data", "simulated", "sim_wave1.rds"))
+
+reference_date <- as.Date(0)
+
+all_nowcast_dates <- reference_date + sort(unique(rep(c(70, 83, 104, 135),3) + rep(c(0,7,14), each = 4)))
+
+feather_days_1st_wave <- c(`Before peak I` = 70, `At peak I` = 83, `After peak I` = 97, `Suppression` = 135)
+
+phases_wave <- data.frame(
+  occurrence_date = reference_date + feather_days_1st_wave,
+  phase = forcats::fct_inorder(c("Before peak I", "At peak I", "After peak I", "Suppression"))
+)
+```
+
+2nd wave
+```{r}
+list_of_sources <- list(
+  R_direct = "wave2_R_direct",
+  R_stepwise = "wave2_R_stepwise",
+  R_generative = "wave2_R_generative",
+  miss_stepwise = "wave2_miss_stepwise",
+  miss_stepwise_independent = "wave2_miss_stepwise_independent",
+  miss_generative = "wave2_miss_generative",
+  R_stepwise_ets = "wave2_R_stepwise_ets",
+  R_generative_ets = "wave2_R_generative_ets"
+)
+ground_truth_sim <- readRDS(here::here("data", "simulated", "sim_wave2.rds"))
+
+reference_date <- as.Date(0)
+
+all_nowcast_dates <- readRDS(here::here("results",list_of_sources[[1]],paste0(list_of_sources[[1]],".rds")))$data_def$now
+
+feather_days_2nd_wave <- c(`Control` = 70, `Before peak II` =100, `At peak II` = 124, `After peak II` = 148)
+
+phases_wave <- data.frame(
+  occurrence_date = reference_date + feather_days_2nd_wave,
+  phase = forcats::fct_inorder(c("Control","Before peak II","At peak II", "After peak II"))
+)
+```
+
+## Get results
+```{r}
+res_list <- define_result_list(result_folder = "results", result_info = T, list_of_sources = list_of_sources, overwrite = F)
+maxDelay <- max(sapply(res_list,function(x) max(x$maxDelay,na.rm=T)))
+```
+
+## Load nowcasting results
+```{r}
+n_res_list <- load_results_sim(res_list, maxDelay, reference_date, ground_truth_sim, keep_posterior = FALSE, overwrite = F, mc_cores = 6)
+```
+
+## Get diagnostics
+```{r}
+diags_list <- lapply(res_list, get_diagnostics, overwrite = F)
+```
+
+Check for model runs that need to be inspected due to diagnostics
+```{r}
+to_inspect <- lapply(diags_list, function(df) df %>% filter((chains_divergent > 0) | (chains_low_ebfmi > 0) | (ess_nowcast!="") | (ess_R!="") | (rhat_nowcast!="") | (rhat_R!="")))
+to_inspect <- bind_rows(to_inspect, .id = "approach")
+to_inspect
+```
+
+Check rhat warnings for R: inspect respective model runs for potentially biased R estimation (none found)
+```{r}
+apply(to_inspect, 1, function(x) {
+  inspect <- n_res_list[[x["approach"]]] |>
+    filter(id %in% as.integer(unique(x["id"]))) |>
+    mutate(approach = x["approach"]) |> 
+    select(approach, R_model, id, nowcast_date, dataset_index, date_index, delay, date, starts_with("R")) |>
+    arrange(id, dataset_index, date_index, delay)
+  if (nrow(inspect) > 0) {
+    return(inspect)
+  } else {
+    return(data.frame())
+  }
+})
+```
+
+## Compute performance metrics
+```{r}
+nowcast_timing_data <- data.frame(
+  difference = c(0, 7, 7, 14, 21),
+  nowcast_timing = forcats::fct_inorder(c("0-6", "7-13", "8-13", "14-20", "21-27"))
+  ) %>%
+  mutate(nowcast_timing_list = forcats::fct_inorder(range_to_comma_list(nowcast_timing), ordered = T)) %>% 
+  full_join(data.frame(delay = 0:6), by = character())
+
+nowcast_timing_data[nowcast_timing_data$nowcast_timing=="8-13","delay"] <- nowcast_timing_data[nowcast_timing_data$nowcast_timing=="8-13","delay"] + 1
+nowcast_timing_data <- nowcast_timing_data %>% filter(delay<6)
+
+phases <- phases_wave %>%
+  full_join(nowcast_timing_data, by = character()) %>%
+  mutate(
+    nowcast_date = occurrence_date + difference,
+    delay = as.integer(delay + difference)
+  ) %>%
+  select(phase, occurrence_date, nowcast_timing, nowcast_timing_list, nowcast_date, delay)
+```
+
+```{r}
+m_res_list <- lapply(n_res_list, function(res) get_metrics(res %>% mutate(delay = as.integer(delay)) %>% right_join(phases, by = c("nowcast_date", "delay")) %>% group_by(dataset_index, R_model, phase, nowcast_timing, nowcast_timing_list)))
+```
+
+# Results
+
+## Plot preparation
+```{r}
+model_metainf <- tribble(
+  ~ internal_name, ~label, ~ label_long, ~ color,
+  "R_direct renewal", "Direct (renewal model)", "Complete data:\nDirect (renewal model)", "#ecb613",
+  "R_stepwise renewal", "Stepwise (truncation adjustment -> renewal model)", "Complete data:\nStepwise (renewal model)", "#4DBBD5FF",
+  "R_stepwise epiestim", "Stepwise (truncation adjustment -> EpiEstim)", "Complete data:\nStepwise (EpiEstim)", "#009933",
+  "R_generative renewal", "Generative (truncation adjustment + renewal model)", "Complete data:\nGenerative (renewal model)", "#E64B35FF",
+  "miss_stepwise_independent renewal", "Stepwise (independent imputation -> nowcasting model)", "Incomplete data:\nStepwise (independent imputation)", "#85e085",
+  "miss_stepwise renewal", "Stepwise (backward imputation -> nowcasting model)", "Incomplete data:\nStepwise (backward imputation)", "#3C5488FF",
+  "miss_generative renewal", "Generative (missingness + nowcasting model)", "Incomplete data:\nGenerative (missingness model)", "#F39B7FFF",
+  "R_stepwise_ets renewal", "Stepwise (truncation adjustment (ETS) -> renewal model)", "Complete data:\nStepwise (renewal model)", "#4d91d5",
+    "R_stepwise_ets epiestim", "Stepwise (truncation adjustment (ETS) -> EpiEstim)", "Complete data:\nStepwise (EpiEstim)", "#00A087FF",
+  "R_generative_ets renewal", "Generative (truncation adjustment + renewal model (ETS))", "Complete data:\nGenerative (renewal model)", "#9b9b4b",
+)
+
+model_names <- setNames(model_metainf$label, model_metainf$internal_name)
+model_colors <- setNames(model_metainf$color, model_metainf$label)
+```
+
+```{r}
+source(here::here("code","utils","plot_legends_synthetic.R"))
+```
+
+## First wave
+
+### Main
+```{r, fig.width = 10, fig.height = 12}
+select_dataset <- 7
+save_plots <- T
+
+suppressWarnings({
+plot_validation_select(dataset_id = select_dataset,
+                    models = c("R_stepwise", "R_generative"),
+                    R_models = "renewal",
+                    feather_days = feather_days_1st_wave,
+                    feather_maxdelay = 7*2+3,
+                    feather_margin = 18,
+                    plot_type = "Cases",
+                    percent_best = T,
+                    categories_name = "Nowcasting approach")
+if (save_plots) ggsave(here::here("figures","paper","wave1_feather_renewal_Nt.pdf"), width = 10, height = 12)
+
+plot_validation_select(dataset_id = select_dataset,
+                    models = c("R_direct", "R_stepwise", "R_generative"),
+                    R_models = "renewal",
+                    feather_days = feather_days_1st_wave,
+                    feather_maxdelay = 7*2+3,
+                    feather_margin = 18,
+                    plot_type = "R",
+                    percent_best = T,
+                    categories_name = "Nowcasting approach")
+if (save_plots) ggsave(here::here("figures","paper","wave1_feather_renewal_Rt.pdf"), width = 10, height = 12)
+
+plot_validation_select(dataset_id = select_dataset,
+                    models = c("miss_stepwise", "miss_generative", "miss_stepwise_independent"),
+                    feather_days = feather_days_1st_wave,
+                    feather_maxdelay = 7*2+3,
+                    feather_margin = 18,
+                    plot_type = "Cases",
+                    percent_best = T,
+                    legends.rel_widths = c(0.3, 0.5, 0.2),
+                    categories_name = "Imputation approach")
+if (save_plots) ggsave(here::here("figures","paper","wave1_feather_miss_Nt.pdf"), width = 10, height = 12)
+
+plot_validation_select(dataset_id = select_dataset,
+                    models = c("miss_stepwise","miss_generative", "miss_stepwise_independent"),
+                    feather_days = feather_days_1st_wave,
+                    feather_maxdelay = 7*2+3,
+                    feather_margin = 18,
+                    plot_type = "R",
+                    percent_best = T,
+                    categories_name = "Imputation approach")
+if (save_plots) ggsave(here::here("figures","paper","wave1_feather_miss_Rt.pdf"), width = 10, height = 12)
+})
+```
+
+### ETS models
+```{r, fig.width = 10, fig.height = 12}
+select_dataset <- 7
+save_plots <- T
+
+suppressWarnings({
+plot_validation_select(dataset_id = select_dataset,
+                    models = c("R_stepwise_ets", "R_generative_ets", "R_generative"),
+                    R_models = "renewal",
+                    feather_days = feather_days_1st_wave,
+                    feather_maxdelay = 7*2+3,
+                    feather_margin = 18,
+                    plot_type = "Cases",
+                    percent_best = T,
+                    categories_name = "Nowcasting approach")})
+if (save_plots) ggsave(here::here("figures","paper","wave1_feather_renewal_ets_Nt.pdf"), width = 10, height = 12)
+
+suppressWarnings({
+plot_validation_select(dataset_id = select_dataset,
+                    models = c("R_stepwise_ets", "R_generative_ets", "R_generative"),
+                    R_models = "renewal",
+                    feather_days = feather_days_1st_wave,
+                    feather_maxdelay = 7*2+3,
+                    feather_margin = 18,
+                    plot_type = "R",
+                    percent_best = T,
+                    categories_name = "Nowcasting approach")})
+if (save_plots) ggsave(here::here("figures","paper","wave1_feather_renewal_ets_Rt.pdf"), width = 10, height = 12)
+
+```
+
+### EpiEstim
+```{r, fig.width = 10, fig.height = 8.5}
+select_dataset <- 7
+save_plots <- T
+
+plot_validation_select(
+  dataset_id = select_dataset,
+  models = c("R_stepwise"),
+  R_models = c("renewal", "epiestim"),
+  feather_days = feather_days_1st_wave,
+  feather_maxdelay = 7 * 2 + 3,
+  lags_list = list(
+    "Nowcasts one week after" = 8:13,
+    "Nowcasts two weeks after" = 14:20
+  ),
+  feather_margin = 18,
+  plot_type = "R",
+  percent_best = T,
+  legend_plot.rel_heights = c(1, 6.3),
+  categories_name = "Nowcasting approach"
+)
+if (save_plots) ggsave(here::here("figures", "paper", "wave1_feather_epiestim_Rt.pdf"), width = 10, height = 8.5)
+```
+
+## Second wave
+
+### Main
+```{r, fig.width = 10, fig.height = 12}
+select_dataset <- 2
+save_plots <- T
+
+suppressWarnings({
+plot_validation_select(dataset_id = select_dataset,
+                    models = c("R_stepwise", "R_generative"),
+                    R_models = "renewal",
+                    feather_days = feather_days_2nd_wave,
+                    feather_maxdelay = 7*2+3,
+                    feather_margin = 18,
+                    plot_type = "Cases",
+                    percent_best  = T,
+                    categories_name = "Nowcasting approach")
+if (save_plots) ggsave(here::here("figures","paper","wave2_feather_renewal_Nt.pdf"), width = 10, height = 12)
+
+plot_validation_select(dataset_id = select_dataset,
+                    models = c("R_direct", "R_stepwise", "R_generative"),
+                    R_models = "renewal",
+                    feather_days = feather_days_2nd_wave,
+                    feather_maxdelay = 7*2+3,
+                    feather_margin = 18,
+                    plot_type = "R",
+                    percent_best = T,
+                    categories_name = "Nowcasting approach")
+if (save_plots) ggsave(here::here("figures","paper","wave2_feather_renewal_Rt.pdf"), width = 10, height = 12)
+
+plot_validation_select(dataset_id = select_dataset,
+                    models = c("miss_stepwise", "miss_generative", "miss_stepwise_independent"),
+                    feather_days = feather_days_2nd_wave,
+                    feather_maxdelay = 7*2+3,
+                    feather_margin = 18,
+                    plot_type = "Cases",
+                    percent_best = T,
+                    legends.rel_widths = c(0.3, 0.5, 0.2),
+                    categories_name = "Imputation approach")
+if (save_plots) ggsave(here::here("figures","paper","wave2_feather_miss_Nt.pdf"), width = 10, height = 12)
+
+plot_validation_select(dataset_id = select_dataset,
+                    models = c("miss_stepwise","miss_generative", "miss_stepwise_independent"),
+                    feather_days = feather_days_2nd_wave,
+                    feather_maxdelay = 7*2+3,
+                    feather_margin = 18,
+                    plot_type = "R",
+                    percent_best = T,
+                    categories_name = "Imputation approach")
+if (save_plots) ggsave(here::here("figures","paper","wave2_feather_miss_Rt.pdf"), width = 10, height = 12)
+})
+```
+
+### ETS models
+```{r, fig.width = 10, fig.height = 12}
+select_dataset <- 2
+save_plots <- T
+
+plot_validation_select(dataset_id = select_dataset,
+                    models = c("R_stepwise_ets", "R_generative_ets", "R_generative"),
+                    R_models = "renewal",
+                    feather_days = feather_days_2nd_wave,
+                    feather_maxdelay = 7*2+3,
+                    feather_margin = 18,
+                    plot_type = "Cases",
+                    percent_best = T, 
+                    categories_name = "Nowcasting approach")
+if (save_plots) ggsave(here::here("figures","paper","wave2_feather_renewal_ets_Nt.pdf"), width = 10, height = 12)
+
+plot_validation_select(dataset_id = select_dataset,
+                    models = c("R_stepwise_ets", "R_generative_ets", "R_generative"),
+                    R_models = "renewal",
+                    feather_days = feather_days_2nd_wave,
+                    feather_maxdelay = 7*2+3,
+                    feather_margin = 18,
+                    plot_type = "R",
+                    percent_best = T,
+                    categories_name = "Nowcasting approach")
+if (save_plots) ggsave(here::here("figures","paper","wave2_feather_renewal_ets_Rt.pdf"), width = 10, height = 12)
+
+```
+
+### EpiEstim
+```{r, fig.width = 10, fig.height = 8.5}
+select_dataset <- 2
+save_plots <- T
+
+plot_validation_select(
+  dataset_id = select_dataset,
+  models = c("R_stepwise"),
+  R_models = c("renewal", "epiestim"),
+  feather_days = feather_days_2nd_wave,
+  feather_maxdelay = 7 * 2 + 3,
+  lags_list = list(
+    "Nowcasts one week after" = 8:13,
+    "Nowcasts two weeks after" = 14:20
+  ),
+  feather_margin = 18,
+  plot_type = "R",
+  percent_best = T,
+  legend_plot.rel_heights = c(1, 6.3),
+  categories_name = "Nowcasting approach"
+)
+if (save_plots) ggsave(here::here("figures", "paper", "wave2_feather_epiestim_Rt.pdf"), width = 10, height = 8.5)
+```

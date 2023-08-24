@@ -1,0 +1,183 @@
+---
+title: "Evaluation of results on COVID-19 hospitalization data from Switzerland"
+---
+# Preparation
+```{r, message=F, output=F}
+here::i_am("code/validation_switzerland_hosp_symp.Rmd")
+source(here::here("code", "utils", "setup.R"))
+source(here::here("code", "utils", "utils_simulate.R"))
+```
+
+```{r}
+list_of_sources <- list(
+  fully_generative = "real_fully_generative",
+  fully_stepwise = "real_fully_stepwise",
+  R_direct = "real_direct"
+)
+```
+
+## Load results
+```{r}
+res_list <- define_result_list(
+  result_folder = "results",
+  result_info = T,
+  list_of_sources = list_of_sources,
+  overwrite = F,
+  resultfile_pattern = "_\\d+_\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}_for_\\d{4}-\\d{2}-\\d{2}_result.rds")
+maxDelay <- max(sapply(res_list,function(x) max(x$maxDelay,na.rm=T)))
+```
+
+Line list data are available under terms of data protection upon request from the Swiss Federal Office of Public Health (FOPH).
+```{r}
+#line_list_empirical <- read_rds(here::here("data", "preprocessed", "prep_symp-rep_DPTv2.rds"))
+line_list_empirical <- NULL
+```
+
+```{r}
+n_res_list <- load_results_real(
+  res_list,
+  maxDelay,
+  reference_date,
+  line_list_empirical,
+  overwrite = FALSE,
+  mc_cores = 6,
+  consolidation_lags = 7:14
+  )
+```
+
+# Results
+
+```{r}
+model_metainf <- tribble(
+  ~ internal_name, ~label, ~ label_long, ~ color,
+  "R_direct renewal", "Direct (renewal model)", "Complete data:\nDirect (renewal model)", "#ecb613",
+  "fully_stepwise epiestim", "Fully stepwise (backward imputation -> truncation adjustment -> EpiEstim)", "Complete data:\nStepwise (EpiEstim)", "#00A087FF",
+  "fully_stepwise renewal", "Fully stepwise (backward imputation -> truncation adjustment -> renewal model)", "Complete data:\nStepwise (renewal model)", "#4DBBD5FF",
+  "fully_generative renewal", "Fully generative (missingness + truncation + renewal model)", "Complete data:\nGenerative (renewal model)", "#E64B35FF",
+)
+
+model_names <- setNames(model_metainf$label, model_metainf$internal_name)
+model_colors <- setNames(model_metainf$color, model_metainf$label)
+```
+
+```{r}
+reference_date = as.Date("2020-02-01")
+
+feather_days <- c(
+  `Before peak I` = as.Date("2020-03-06"),
+  `At peak I` = as.Date("2020-03-20"),
+  `After peak I` = as.Date("2020-04-05"),
+  `Before peak II` = as.Date("2020-10-15"),
+  `At peak II` = as.Date("2020-10-28"),
+  `After peak II` = as.Date("2021-01-19")
+  ) - reference_date
+
+feather_days_names <- names(feather_days)
+feather_days <- as.integer(feather_days)
+names(feather_days) <- feather_days_names
+
+phases_wave <- data.frame(
+  occurrence_date = reference_date + feather_days,
+  phase = forcats::fct_inorder(names(feather_days))
+)
+
+nowcast_timing_data <- data.frame(
+  difference = c(0, 7, 14, 21),
+  nowcast_timing = forcats::fct_inorder(c("0-6", "7-13", "14-20", "21-27"))
+  ) %>%
+  mutate(nowcast_timing_list = forcats::fct_inorder(
+    range_to_comma_list(nowcast_timing), ordered = T)) %>% 
+  full_join(data.frame(delay = 0:6), by = character())
+
+phases <- phases_wave %>%
+  full_join(nowcast_timing_data, by = character()) %>%
+  mutate(
+    nowcast_date = occurrence_date + difference,
+    delay = as.integer(delay + difference)
+  ) %>%
+  select(phase,
+         occurrence_date,
+         nowcast_timing,
+         nowcast_timing_list,
+         nowcast_date,
+         delay)
+```
+
+### Check diagnostics
+```{r}
+diags_list <- lapply(res_list, get_diagnostics, overwrite = FALSE)
+```
+
+```{r}
+to_inspect <- lapply(diags_list, function(df) df %>% filter((chains_divergent > 0) | (chains_low_ebfmi > 0) | (ess_nowcast!="") | (ess_R!="") | (rhat_nowcast!="") | (rhat_R!=""), now %in% phases_wave$occurrence_date))
+to_inspect <- bind_rows(to_inspect, .id = "approach")
+to_inspect
+```
+
+Get performance metrics
+```{r}
+m_res_list <- lapply(n_res_list, function(res) {
+  get_metrics(res %>% 
+              mutate(delay = as.integer(delay)) %>%
+                right_join(phases, by = c("nowcast_date", "delay")) %>%
+                group_by(dataset_index,
+                         R_model,
+                         phase,
+                         nowcast_timing,
+                         nowcast_timing_list))
+  })
+```
+
+## Plots
+Note that plotting will fail without the line list data.
+
+Get custom plot legends
+```{r}
+source(here::here("code","utils","plot_legends_real.R"))
+```
+
+### Plot results for Nt
+```{r, fig.width = 10, fig.height = 12}
+save_plots <- TRUE
+
+plot_validation_select(dataset_id = 1,
+                    models = c("fully_stepwise", "fully_generative"),
+                    R_models = "renewal",
+                    feather_days = feather_days,
+                    feather_maxdelay = 7*2+3,
+                    feather_margin = 18,
+                    plot_type = "Cases",
+                    percent_best = F,
+                    ground_truth_linetype = "dashed",
+                    has_missing_onsets = T,
+                    legends.rel_widths = c(0.2, 0.8, 0.02)
+                    )
+
+if (save_plots) {
+  ggsave(
+    here::here("figures","paper","switzerland_feather_Nt.pdf"),
+    width = 10, height = 12
+  )}
+```
+
+### Plot results for Rt
+```{r, fig.width = 10, fig.height = 9.5}
+plot_validation_select(dataset_id = 1,
+                    models = c("R_direct", "fully_stepwise", "fully_generative"),
+                    R_models = "renewal",
+                    feather_days = feather_days,
+                    feather_maxdelay = 7*2+3,
+                    feather_margin = 18,
+                    plot_type = "R",
+                    performance_metric = NULL,
+                    truth_data_index = NULL,
+                    ground_truth_linetype = "dashed",
+                    legends.rel_widths = c(0.2, 0.7, 0.1),
+                    legend_plot.rel_heights = c(1.2, 9))
+
+if (save_plots) {
+  ggsave(
+    here::here("figures","paper","switzerland_feather_Rt.pdf"),
+    width = 10, height = 9.5
+  )}
+```
