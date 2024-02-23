@@ -1,0 +1,243 @@
+---
+title: "Run nowcasting approaches on synthetic data"
+---
+
+```{r}
+here::i_am("code/nowcast_sensitivity_incubation.Rmd")
+
+source(here::here("code", "utils", "setup.R"))
+source(here::here("code", "utils", "utils_simulate.R"))
+```
+
+## Define approaches/models and data
+```{r}
+models <- list(
+  R_direct = list(
+    model = "renewal_direct",
+    data = "complete"
+  ),
+  R_generative = list(
+    model = "impute_adjust_renewal",
+    data = "complete"
+  ),
+  R_stepwise = list(
+    model = "impute_adjust",
+    data = "complete"
+  ),
+  miss_generative = list(
+    model = "impute_adjust_renewal",
+    data = "incomplete"
+  ),
+  miss_stepwise = list(
+    model = "impute_then_adjust_renewal",
+    data = "incomplete"
+  )
+)
+data_selection <- 1:50
+
+inc_wildtype_list <-
+  list(
+    correct = get_discrete_gamma(
+      gamma_mean = 5.3,
+      gamma_sd = 3.2,
+      maxX = 21
+    ), # Linton et al. 2020
+    short = get_discrete_gamma(
+      gamma_mean = 5.3 * 0.5,
+      gamma_sd = 3.2,
+      maxX = 21
+    ), # 50% shorter
+    long = get_discrete_gamma(
+      gamma_mean = 5.3 * 1.5,
+      gamma_sd = 3.2,
+      maxX = 21
+    ) # 50% longer
+  )
+
+misspec_type <- "short"
+inc_wildtype <- inc_wildtype_list[[misspec_type]]
+
+gen_wildtype <- get_discrete_gamma(
+  gamma_mean = 4.9,
+  gamma_sd = 4.1, maxX = 21,
+  include_zero = F
+) # Hart et al. 2021
+
+reference_date <- zoo::as.Date(0)
+```
+
+## Create all nowcasting jobs (one job array per approach per scenario)
+```{r}
+for (wave_i in c(1,2)) {
+  scenario_name <- c(paste0("inc_misspec_",misspec_type,"_wave1"),
+                     paste0("inc_misspec_",misspec_type,"_wave2")
+                     )[wave_i]
+  
+  if (wave_i == 1) {
+    sim_data <- readRDS(here::here("data", "simulated", "sim_wave1.rds"))
+    now <- reference_date + sort(unique(rep(c(70, 83, 104, 135),3) +
+                                          rep(c(0,7,14), each = 4)))
+  } else if (wave_i == 2) {
+    sim_data <- readRDS(here::here("data", "simulated", "sim_wave2.rds"))
+    now <- reference_date + sort(unique(rep(c(70, 100, 124, 148), 3) +
+                                          rep(c(0, 7, 14), each = 4)))
+  } else {
+    stop("Invalid wave.")
+  }
+  
+  start_date <- pmax(reference_date, now - 7 * 4 * 3) # cover last 3 months
+  
+  print(paste0(
+    "First nowcast is covering the period from ",
+    start_date[1], " to ", now[1], "."
+  ))
+  print(paste0(
+    "Last nowcast is covering the period from ",
+    start_date[length(start_date)], " to ", now[length(now)], "."
+  ))
+  
+  # no missing symptom onset dates (complete)
+  nowcast_data_complete <- lapply(sim_data, function(sim_data) {
+    sim_data[["linelist"]] %>%
+      mutate(across(ends_with("time"), function(x) reference_date + x)) %>%
+      mutate(onset_known = TRUE) %>%
+      rename(event1_date = onset_time, event2_date = rep_time)
+  })
+  
+  # with missing symptom onset dates (incomplete)
+  nowcast_data_incomplete <- lapply(sim_data, function(sim_data) {
+    sim_data[["linelist"]] %>%
+      mutate(across(ends_with("time"), function(x) reference_date + x)) %>%
+      mutate(onset_time = as.Date(ifelse(onset_known, onset_time, NA))) %>%
+      rename(event1_date = onset_time, event2_date = rep_time)
+  })
+  
+  for (i in 1:length(models)) {
+    cat(paste0("\n\n-----------------------------\n", names(models)[[i]], "\n\n"))
+    
+    if (models[[i]]$data == "complete") {
+      data_def <- define_data(
+        nowcast_data_complete[data_selection], now, start_date
+      )
+    } else {
+      data_def <- define_data(
+        nowcast_data_incomplete[data_selection], now, start_date
+      )
+    }
+    
+    model_def <- define_model(
+      model_type = models[[i]]$model,
+      D = 7 * 8, # maximum delay
+      delay_changepoint = "segmented", # piecewise linear model for delay effects
+      overdispersion = FALSE, # poisson model
+      ets_diff = FALSE,
+      ets_noncentered = TRUE,
+      profile = TRUE,
+      threads = FALSE,
+      force_recompile = FALSE
+    )
+    
+    if (models[[i]]$data == "complete") {
+      alphaprior <- get_prior("alpha_logit_start", mu = 10, sd = 0.01)
+    } else {
+      alphaprior <- get_prior("alpha_logit_start", mu = 0, sd = 2)
+    }
+    
+    if (str_detect(names(models)[[i]], "_ets")) {
+      ets_alpha_fixed <- -1
+      ets_beta_fixed <- -1
+      ets_phi_fixed <- 0
+      print("Using ets model.")
+    } else {
+      ets_alpha_fixed <- 1
+      ets_beta_fixed <- 1
+      ets_phi_fixed <- 0
+    }
+    
+    prior_def <- define_priors(
+      model_def = model_def,
+      dirichlet_prior = FALSE,
+      ets_alpha_fixed = ets_alpha_fixed,
+      ets_beta_fixed = ets_beta_fixed,
+      ets_phi_fixed = ets_phi_fixed,
+      reporting_proportion = 0.02,
+      alpha_logit_start = alphaprior,
+      latent_delay_dist = inc_wildtype,
+      generation_time_dist = gen_wildtype,
+    )
+    
+    sampling_def <- define_sampling(
+      iter_warmup = 1000,
+      iter_sampling = 1000,
+      chains = 4,
+      parallel_chains = 4,
+      adapt_delta = 0.999,
+      step_size = 0.01,
+      max_treedepth = 20,
+      inits_function = default_inits,
+      refresh = 200,
+      show_messages = T,
+      temp_save = F,
+      seed = 0
+    )
+    
+    output_def <- define_output(
+      stan_data_list = FALSE,
+      stan_prep_info = FALSE,
+      priors = FALSE,
+      fit = FALSE,
+      delays = FALSE,
+      overwrite = FALSE,
+      posterior_nowcast = TRUE,
+      posterior_R = TRUE,
+      R_generative = TRUE
+    )
+    
+    nowcast_job <- define_job(
+      job_name = paste0(scenario_name, "_", names(models)[[i]]),
+      data_def = data_def,
+      model_def = model_def,
+      prior_def = prior_def,
+      sampling_def = sampling_def,
+      output_def = output_def,
+      index_by_date = F
+    )
+    
+    if (length(nowcast_job$jobindex_mapping) == 0) {
+      print("All job indices already fitted.")
+      next
+    }
+    
+    # Save nowcast job array
+    if (!dir.exists(here::here("results", nowcast_job$job_name))) {
+      dir.create(here::here("results", nowcast_job$job_name))
+    }
+    saveRDS(nowcast_job, here::here("results",
+                                    nowcast_job$job_name,
+                                    paste0(nowcast_job$job_name, ".rds")))
+  }
+}
+```
+
+## Running jobs
+The nowcasting job arrays are stored in the "results" folder. Running all the jobs likely requires an HPC cluster. 
+To run a job locally, first load the job array:
+```{r}
+jobname <- "inc_misspec_short_wave1_R_direct"
+jobarray <- readRDS(here::here("results", jobname, paste0(jobname, ".rds")))
+```
+
+Then run one of the jobs from the array:
+```{r}
+jobid <- 1
+nowcast_result <- make_nowcast_from_job(jobarray, jobid)
+```
+
+Then save the result in a corresponding result file:
+```{r}
+output_filepath <- here::here(
+  "results", jobname, paste0(jobname, "_", jobid, "_result", ".rds"))
+print(paste("Saving results to", output_filepath))
+saveRDS(nowcast_result, output_filepath)
+```
+

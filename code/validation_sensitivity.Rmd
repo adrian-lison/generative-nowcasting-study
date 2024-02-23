@@ -1,0 +1,260 @@
+---
+title: "Evaluation of nowcasting results on synthetic data"
+---
+# Preparation
+```{r, message=F, output=F}
+here::i_am("code/validation_sensitivity.Rmd")
+source(here::here("code", "utils", "setup.R"))
+source(here::here("code", "utils", "utils_simulate.R"))
+```
+
+## Select wave
+Please run either of the two chunks below to evaluate results for the first or second wave, respectively.
+
+1st wave, short inc
+```{r}
+list_of_sources <- list(
+  R_direct = "inc_misspec_short_wave1_R_direct",
+  R_stepwise = "inc_misspec_short_wave1_R_stepwise",
+  R_generative = "inc_misspec_short_wave1_R_generative"
+)
+ground_truth_sim <- readRDS(here::here("data", "simulated", "sim_wave1.rds"))
+
+reference_date <- zoo::as.Date(0)
+
+all_nowcast_dates <- reference_date + sort(unique(rep(c(70, 83, 104, 135),3) + rep(c(0,7,14), each = 4)))
+
+feather_days_1st_wave <- c(`Before peak I` = 70, `At peak I` = 83, `After peak I` = 97, `Suppression` = 135)
+
+phases_wave <- data.frame(
+  occurrence_date = reference_date + feather_days_1st_wave,
+  phase = forcats::fct_inorder(c("Before peak I", "At peak I", "After peak I", "Suppression"))
+)
+
+misspec_type <- "short"
+truth_addendum <- readRDS(here::here("data","simulated","sim_wave1_truth_addendum.rds"))
+```
+
+1st wave, long inc
+```{r}
+list_of_sources <- list(
+  R_direct = "inc_misspec_long_wave1_R_direct",
+  R_stepwise = "inc_misspec_long_wave1_R_stepwise",
+  R_generative = "inc_misspec_long_wave1_R_generative"
+)
+ground_truth_sim <- readRDS(here::here("data", "simulated", "sim_wave1.rds"))
+
+reference_date <- zoo::as.Date(0)
+
+all_nowcast_dates <- reference_date + sort(unique(rep(c(70, 83, 104, 135),3) + rep(c(0,7,14), each = 4)))
+
+feather_days_1st_wave <- c(`Before peak I` = 70, `At peak I` = 83, `After peak I` = 97, `Suppression` = 135)
+
+phases_wave <- data.frame(
+  occurrence_date = reference_date + feather_days_1st_wave,
+  phase = forcats::fct_inorder(c("Before peak I", "At peak I", "After peak I", "Suppression"))
+)
+
+misspec_type <- "long"
+truth_addendum <- readRDS(here::here("data","simulated","sim_wave1_truth_addendum.rds"))
+```
+
+## Get results
+```{r}
+res_list <- define_result_list(result_folder = "batch/results", result_info = T, list_of_sources = list_of_sources, overwrite = F)
+maxDelay <- max(sapply(res_list,function(x) max(x$maxDelay,na.rm=T)))
+```
+
+## Load nowcasting results
+```{r}
+n_res_list <- load_results_sim(res_list, maxDelay, reference_date, ground_truth_sim, keep_posterior = FALSE, overwrite = F, mc_cores = 6)
+n_res_list <- lapply(n_res_list, function(x) bind_rows(x, truth_addendum))
+```
+
+## Get diagnostics
+```{r}
+diags_list <- lapply(res_list, get_diagnostics, overwrite = F)
+```
+
+Check for model runs that need to be inspected due to diagnostics
+```{r}
+to_inspect <- lapply(diags_list, function(df) df %>% filter((chains_divergent > 0) | (chains_low_ebfmi > 0) | (ess_nowcast!="") | (ess_R!="") | (rhat_nowcast!="") | (rhat_R!="")))
+to_inspect <- bind_rows(to_inspect, .id = "approach")
+to_inspect
+```
+
+Check rhat warnings for R: inspect respective model runs for potentially biased R estimation (none found)
+```{r}
+apply(to_inspect, 1, function(x) {
+  inspect <- n_res_list[[x["approach"]]] |>
+    filter(id %in% as.integer(unique(x["id"]))) |>
+    mutate(approach = x["approach"]) |> 
+    select(approach, R_model, id, nowcast_date, dataset_index, date_index, delay, date, starts_with("R")) |>
+    arrange(id, dataset_index, date_index, delay)
+  if (nrow(inspect) > 0) {
+    return(inspect)
+  } else {
+    return(data.frame())
+  }
+})
+```
+
+## Compute performance metrics
+```{r}
+nowcast_timing_data <- data.frame(
+  difference = c(0, 7, 7, 14, 21),
+  nowcast_timing = forcats::fct_inorder(c("0-6", "7-13", "8-13", "14-20", "21-27"))
+  ) %>%
+  mutate(nowcast_timing_list = forcats::fct_inorder(range_to_comma_list(nowcast_timing), ordered = T)) %>% 
+  full_join(data.frame(delay = 0:6), by = character())
+
+nowcast_timing_data[nowcast_timing_data$nowcast_timing=="8-13","delay"] <- nowcast_timing_data[nowcast_timing_data$nowcast_timing=="8-13","delay"] + 1
+nowcast_timing_data <- nowcast_timing_data %>% filter(delay<6)
+
+phases <- phases_wave %>%
+  full_join(nowcast_timing_data, by = character()) %>%
+  mutate(
+    nowcast_date = occurrence_date + difference,
+    delay = as.integer(delay + difference)
+  ) %>%
+  select(phase, occurrence_date, nowcast_timing, nowcast_timing_list, nowcast_date, delay)
+
+table_timings <- c(
+    "In same week" =  "0-6",
+    "One week after" = "7-13",
+    "Two weeks after" = "14-20"
+  )
+```
+
+```{r}
+m_res_list <- lapply(n_res_list, function(res) get_metrics(res %>% mutate(delay = as.integer(delay)) %>% right_join(phases, by = c("nowcast_date", "delay")) %>% group_by(dataset_index, R_model, phase, nowcast_timing, nowcast_timing_list)))
+```
+
+# Results
+
+## Plot preparation
+```{r}
+model_metainf <- tribble(
+  ~ internal_name, ~label, ~label_short, ~label_short_1st, ~label_short_2nd, ~ label_long, ~ color,
+  "R_direct renewal",
+  "Direct (renewal model)",
+  "Direct", "Direct", "",
+  "Complete data:\nDirect (renewal model)", "#ecb613",
+  
+  "R_stepwise renewal",
+  "Stepwise (truncation adjustment -> renewal model)",
+  "Stepwise", "Stepwise", "",
+  "Complete data:\nStepwise (renewal model)", "#4DBBD5FF",
+  
+  "R_stepwise epiestim",
+  "Stepwise (truncation adjustment -> EpiEstim)",
+  "Stepwise (EpiEstim)", "Stepwise", "(EpiEstim)",
+  "Complete data:\nStepwise (EpiEstim)", "#009933",
+  
+  "R_generative renewal",
+  "Generative (truncation adjustment + renewal model)",
+  "Generative", "Generative", "",
+  "Complete data:\nGenerative (renewal model)", "#E64B35FF",
+  
+  "miss_stepwise_independent renewal",
+  "Stepwise (independent imputation -> nowcasting model)",
+  "Stepwise (independent)", "Stepwise", "(independent)", 
+  "Incomplete data:\nStepwise (independent imputation)", "#85e085",
+  
+  "miss_stepwise renewal",
+  "Stepwise (backward imputation -> nowcasting model)",
+  "Stepwise (backward)", "Stepwise", "(backward)",
+  "Incomplete data:\nStepwise (backward imputation)", "#3C5488FF",
+  
+  "miss_generative renewal",
+  "Generative (missingness + nowcasting model)",
+  "Generative",  "Generative", "",
+  "Incomplete data:\nGenerative (missingness model)", "#F39B7FFF",
+  
+  "R_stepwise_ets renewal",
+  "Stepwise (truncation adjustment (ETS) -> renewal model)",
+  "Stepwise (non-stationary)", "Stepwise", "(non-stationary)",
+  "Complete data:\nStepwise (renewal model)", "#4d91d5",
+  
+  "R_stepwise_ets epiestim",
+  "Stepwise (truncation adjustment (ETS) -> EpiEstim)",
+  "Stepwise (non-stationary, EpiEstim)", "Stepwise", "(non-stationary, EpiEstim)",
+  "Complete data:\nStepwise (EpiEstim)", "#00A087FF",
+  
+  "R_generative_ets renewal",
+  "Generative (truncation adjustment + renewal model (ETS))",
+  "Generative (non-stationary)", "Generative", "(non-stationary)",
+  "Complete data:\nGenerative (renewal model)", "#9b9b4b",
+)
+
+model_names <- setNames(model_metainf$label, model_metainf$internal_name)
+model_names_short <- setNames(model_metainf$label_short, model_metainf$internal_name)
+model_names_short_1st <- setNames(model_metainf$label_short_1st, model_metainf$internal_name)
+model_names_short_2nd <- setNames(model_metainf$label_short_2nd, model_metainf$internal_name)
+model_colors <- setNames(model_metainf$color, model_metainf$label)
+```
+
+```{r}
+source(here::here("code","utils","plot_legends_synthetic.R"))
+```
+
+## First wave
+
+### Main
+```{r, fig.width = 10, fig.height = 12}
+select_dataset <- 7
+save_plots <- T
+make_plots <- T
+save_tables <- T
+
+suppressWarnings({
+
+  # Nowcast cases, R models
+  if (make_plots) plot_validation_select(dataset_id = select_dataset,
+                      models = c("R_stepwise", "R_generative"),
+                      R_models = "renewal",
+                      feather_days = feather_days_1st_wave,
+                      feather_maxdelay = 7*2+3,
+                      feather_margin = 18,
+                      plot_type = "Cases",
+                      percent_best = T,
+                      categories_name = "Nowcasting approach")
+  if (save_plots) {
+    ggsave(here::here("figures","paper",paste0("wave1_feather_renewal_Nt_misspec_", misspec_type, ".pdf")), width = 10, height = 12)
+  }
+  if (save_tables) {
+      make_performance_table_latex(
+        outcome_name = "nowcast_all",
+        models = c("R_stepwise", "R_generative"),
+        R_models = "renewal",
+        timings = table_timings
+        ) |> 
+      write_file(
+        file = here::here("tables","paper",paste0("wave1_feather_renewal_Nt_misspec_", misspec_type, ".tex"))
+        )
+  }
+
+  # Nowcast Rt, R models
+  if (make_plots) plot_validation_select(dataset_id = select_dataset,
+                      models = c("R_direct", "R_stepwise", "R_generative"),
+                      R_models = "renewal",
+                      feather_days = feather_days_1st_wave,
+                      feather_maxdelay = 7*2+3,
+                      feather_margin = 18,
+                      plot_type = "R",
+                      percent_best = T,
+                      categories_name = "Nowcasting approach")
+  if (save_plots) ggsave(here::here("figures","paper",paste0("wave1_feather_renewal_Rt_misspec_", misspec_type, ".pdf")), width = 10, height = 12)
+  if (save_tables) {
+    make_performance_table_latex(
+      outcome_name = "R",
+      models = c("R_direct", "R_stepwise", "R_generative"),
+      R_models = "renewal",
+      timings = table_timings
+      ) |> 
+    write_file(
+      file = here::here("tables","paper",paste0("wave1_feather_renewal_Rt_misspec_", misspec_type, ".tex"))
+    )
+  }
+})
+```
