@@ -20,12 +20,12 @@ if (!CLUSTER_MODE) library(nleqslv)
 # library(surveillance)
 
 # data manipulation
+#library(magrittr)
 library(dplyr)
 library(tidyr)
 if (!CLUSTER_MODE) library(readr)
 if (!CLUSTER_MODE) library(purrr)
 if (!CLUSTER_MODE) library(tibble)
-library(magrittr)
 library(lubridate)
 library(stringr)
 if (!CLUSTER_MODE) library(forcats)

@@ -144,7 +144,7 @@ summarize_fit <- function(fitted_model,
     }
 
     fit_summary[["other"]] <- fitted_model %>%
-      gather_draws(`(alpha_logit_start)|(alpha_logit_sd)|(lambda_log_level_start)|(lambda_log_trend_start)|(lambda_log_sd)|(iota_log_ar_start)|(iota_log_ar_sd)|(iota_log_sd)|(R_level_start)|(R_trend_start)|(R_sd)|(ets_alpha)|(ets_beta)|(ets_phi)|(xi_negbinom)`, regex = TRUE) %>%
+      gather_draws(`(alpha_logit_start)|(alpha_logit_sd)|(lambda_log_level_start)|(lambda_log_trend_start)|(lambda_log_sd)|(iota_log_ar_start)|(iota_log_ar_sd)|(iota_log_sd)|(R_level_start)|(R_trend_start)|(R_sd)|(ets_alpha)|(ets_beta)|(ets_phi)|(xi_negbinom\\[1\\])`, regex = TRUE) %>%
       median_qi(.width = 0.95) %>%
       select(-c(.width, .point, .interval))
   }

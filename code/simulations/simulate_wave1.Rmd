@@ -170,7 +170,7 @@ plot1 <- bind_rows(list(
   ) %>%
   mutate(timepoint = as.integer(timepoint)) %>% 
   arrange(timepoint) %>% 
-  mutate(timepoint = forcats::fct_inorder(format(timepoint - 1 + as.Date(0), "%B %d"), ordered = T)) %>% 
+  mutate(timepoint = forcats::fct_inorder(format(timepoint - 1 + zoo::as.Date(0), "%B %d"), ordered = T)) %>% 
   ggplot(aes(x = delay, y = p)) +
   geom_bar(stat = "identity", position = "dodge", fill = "darkgrey") +
   theme_bw() +
@@ -181,7 +181,7 @@ plot1 <- bind_rows(list(
   ggsci::scale_fill_npg() +
   xlab("Forward reporting delay [days]") + ylab("PMF")
 
-plot2 <- data.frame(mean_dist = dist_get_mean(symp_to_rep_dist[[3]])) %>% mutate(date = as.Date(0) + (0:(n()-1))) %>% 
+plot2 <- data.frame(mean_dist = dist_get_mean(symp_to_rep_dist[[3]])) %>% mutate(date = zoo::as.Date(0) + (0:(n()-1))) %>% 
   ggplot(aes(x=date, y = mean_dist)) + geom_line() +
   scale_x_date(expand = c(0,0)) +
     theme_bw() +
@@ -267,7 +267,7 @@ sim[[sim_index]][["linelist"]] %>%
   filter(Event != "Hospitalisation") %>% 
   group_by(Event) %>% 
   complete(time = 0:200, fill = list(n = 0)) %>% 
-  mutate(time = as.Date(0) + time) %>% 
+  mutate(time = zoo::as.Date(0) + time) %>% 
   ggplot() +
   geom_line(aes(x = time, y = n, color = Event)) +
   theme_bw() +
@@ -276,7 +276,7 @@ sim[[sim_index]][["linelist"]] %>%
   ylab("Number of cases") +
   scale_x_date(expand = c(0, 0)) +
   scale_color_manual(values = c("red", "blue", "black")) +
-  coord_cartesian(xlim = as.Date(0) + c(30, 200)) +
+  coord_cartesian(xlim = zoo::as.Date(0) + c(30, 200)) +
   facet_wrap(~Event, ncol = 1)
 
 ggsave(here::here("figures", "paper", "sim_wave1_example_trajectory.pdf"), width = 10, height = 5)

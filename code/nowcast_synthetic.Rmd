@@ -57,7 +57,7 @@ gen_wildtype <- get_discrete_gamma(
   include_zero = F
 ) # Hart et al. 2021
 
-reference_date <- as.Date(0)
+reference_date <- zoo::as.Date(0)
 ```
 
 ## Create all nowcasting jobs (one job array per approach per scenario)

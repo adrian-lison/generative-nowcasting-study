@@ -335,6 +335,8 @@ load_results_real <- function(res_list, maxDelay, reference_date,
   return(n_res_list)
 }
 
+## Extracting results ----
+
 #' Get diagnostic information of each fit, along with some summaries
 #'
 #' @return A `list` with summary data frames and the full diagnostic data frames
@@ -979,6 +981,8 @@ add_ground_truth_simulated <- function(nowcasts, ground_truth_sim_list, maxDelay
   return(nowcasts)
 }
 
+## Consolidated nowcasts ----
+
 #' When validating on empirical data, we have no true R. As a proxy, we can use
 #' R estimates obtained on the fully consolidated data over all models
 #' 
@@ -1033,6 +1037,7 @@ add_consolidated_nowcast_as_true <- function(nowcasts, lags) {
   return(nowcasts)
 }
 
+## Performance metrics ----
 #' Add various per-observation performance measures to the nowcast results.
 #' These are later used as building blocks in `get_metrics()`.
 add_performance <- function(nowcasts) {
@@ -1659,9 +1664,41 @@ add_consistency <- function(nowcasts, slack = 2, R_slack = 0.1) {
   return(nowcasts)
 }
 
-# Plotting
+## Plotting ----
 
-#' WIS performance plot across models, phases, but for selected lags
+# General performance plot across models, phases, for selected lags
+plot_performance_select <- function(m_res_list, outcome_name, models, metric, metric_name, delays_select) {
+  bind_rows(m_res_list, .id = "model") %>%
+    mutate(model = paste(model, R_model)) %>%
+    filter(model %in% models, nowcast_timing_list == paste0(delays_select, collapse = ",")) %>%
+    mutate(model = recode_factor(model, !!!model_names, .ordered = T)) %>%
+    select(dataset_index, model, phase, starts_with(outcome_name)) %>%
+    select(-contains("naive")) %>%
+    select(dataset_index, model, phase, contains(c("crps", "logS", "coverage", "MAE", "wis"))) %>%
+    pivot_longer(-c(dataset_index, model, phase)) %>%
+    mutate(outcome = str_extract(name, outcome_name), name = str_remove(name, paste0(outcome_name, "_"))) %>%
+    filter(name == metric, !is.na(value)) %>%
+    ggplot(aes(y = value, color = model)) +
+    geom_boxplot(outlier.shape = NA) +
+    facet_wrap(~phase, nrow = 1, scales = "fixed") +
+    theme_bw() +
+    theme(
+      legend.position = "none",
+      strip.background = element_rect(fill = NA),
+      axis.ticks.x = element_blank(),
+      axis.text.x = element_blank(),
+    ) +
+    ylab(metric_name) +
+    coord_cartesian(ylim = c(0, 0.5)) +
+    scale_x_continuous(breaks = NULL) +
+    scale_color_manual(
+      name = "Approach", values = model_colors[names(model_colors) %in% model_names[models]]
+    ) %>%
+    return()
+}
+
+
+#' WIS performance plot across models, phases, for selected lags
 plot_performance_wis_select <- function(m_res_list, outcome_name, models, delays_select) {
   plotdat <- bind_rows(m_res_list, .id = "model") %>%
     mutate(model = paste(model, R_model)) %>%
@@ -1948,6 +1985,15 @@ plot_validation_select <- function(dataset_id,
         max(c(0, truth_data_cases$nowcast_all_true, na.rm = T)) * 1.3,
         na.rm = T
       ) + 10
+      panel_labels <- nowcast_data_cases |>
+        group_by(nowcast_date) |>
+        summarize(
+          min_date = min(date, na.rm = T),
+          .groups = "drop"
+          ) |> 
+        mutate(
+          i_label = paste0(LETTERS[i], ".", rank(nowcast_date)),
+        )
       
       PlotNowcast <- nowcast_data_cases %>%
         {
@@ -2026,11 +2072,39 @@ plot_validation_select <- function(dataset_id,
             coord_cartesian(
               ylim = c(minimum_y, maximum_y), clip = "off"
             ) +
-            facet_wrap(~nowcast_date, nrow = 1, scales = "free")
+            facet_wrap(~nowcast_date, nrow = 1, scales = "free") + 
+            geom_rect(data = panel_labels,
+              aes(xmin = min_date, xmax = min_date + 6),
+              ymin = maximum_y * 1,
+              ymax = maximum_y * ifelse(length(feather_days)>4,1.125,1.145),
+              linewidth = 1, fill = "black", color = NA) + 
+            geom_text(data = panel_labels,
+                      aes(x = min_date + 3, label = i_label),
+                      y = maximum_y * ifelse(length(feather_days)>4,1.06,1.07),
+                      color = "white", #fontface = "bold",
+                      hjust = 0.5, vjust = 0.5,
+                      size = ifelse(length(feather_days)>4,3,5)
+                      ) + 
+            geom_text(data = panel_labels,
+                      aes(x = min_date),
+                      y = -maximum_y * ifelse(length(feather_days)>4,.03,.03),
+                      color = "black",
+                      label = ifelse(length(feather_days)>4,"Onset\ndate","Onset\ndate"),
+                      hjust = 0, vjust = 1, size = 2.5, lineheight = .8
+            )
         }
     } else if (plot_type == "R") {
       minimum_y <- 0
       maximum_y <- 2.6
+      panel_labels <- nowcast_data_cases |>
+        group_by(nowcast_date) |>
+        summarize(
+          min_date = min(date, na.rm = T),
+          .groups = "drop"
+        ) |> 
+        mutate(
+          i_label = paste0(LETTERS[i], ".", rank(nowcast_date)),
+        )
       
       PlotNowcast <- nowcast_data_cases %>%
         {
@@ -2091,7 +2165,26 @@ plot_validation_select <- function(dataset_id,
             coord_cartesian(
               ylim = c(minimum_y, maximum_y), clip = "off"
             ) +
-            facet_wrap(~nowcast_date, nrow = 1, scales = "free")
+            facet_wrap(~nowcast_date, nrow = 1, scales = "free") + 
+            geom_rect(data = panel_labels,
+                      aes(xmin = min_date, xmax = min_date + 6),
+                      ymin = maximum_y * 1,
+                      ymax = maximum_y * ifelse(length(feather_days)>4,1.125,1.145),
+                      linewidth = 1, fill = "black", color = NA) + 
+            geom_text(data = panel_labels,
+                      aes(x = min_date + 3, label = i_label),
+                      y = maximum_y * ifelse(length(feather_days)>4,1.06,1.07),
+                      color = "white", #fontface = "bold",
+                      hjust = 0.5, vjust = 0.5,
+                      size = ifelse(length(feather_days)>4,3,5)
+            ) +  
+            geom_text(data = panel_labels,
+                      aes(x = min_date),
+                      y = -maximum_y * ifelse(length(feather_days)>4,.03,.03),
+                      color = "black",
+                      label = ifelse(length(feather_days)>4,"Infect.\ndate","Infection\ndate"),
+                      hjust = 0, vjust = 1, size = 2.5, lineheight = .8
+            )
         }
     } else {
       stop("Unknown plot type.")
@@ -2126,7 +2219,7 @@ plot_validation_select <- function(dataset_id,
         legend.background = element_blank(),
         axis.title.x = element_blank(),
         strip.background = element_rect(
-          fill = NA, color = "black", linewidth = 1
+          fill = NA, color = "black", linewidth = 0.7
         ),
       ) +
       ggtitle(names(lags_list)[[i]]) +
@@ -2283,4 +2376,152 @@ plot_validation_select <- function(dataset_id,
     )
   }
   return(final_plot)
+}
+
+## Latex tables ----
+
+make_performance_table <- function(outcome_name, models, R_models, timings = c(
+  "In same week" =  "0-6",
+  "One week after" = "7-13",
+  "Two weeks after" = "14-20"
+)) {
+  r_timings <- names(timings)
+  names(r_timings) <- timings
+  names_shortlist <- model_names_short[paste(models, R_models)]
+  names_shortlist <- paste0("_", names_shortlist)
+  if (length(names_shortlist) < 3) {
+    names_shortlist <- c(names_shortlist, rep("nonexistent", 3 - length(names_shortlist)))
+  }
+  
+  wide_df <- bind_rows(m_res_list, .id = "model") %>%
+    filter(
+      model %in% models,
+      R_model %in% R_models,
+      nowcast_timing %in% timings
+    ) %>%
+    mutate(model = paste(model, R_model)) %>%
+    mutate(model = recode_factor(model, !!!model_names_short, .ordered = T)) %>%
+    #mutate(nowcast_timing = recode_factor(nowcast_timing, !!!r_timings, .ordered = T)) |> 
+    group_by(dataset_index, phase, nowcast_timing) %>%
+    mutate(
+      R_best = R_mean_wis == min(R_mean_wis, na.rm = T),
+      nowcast_all_best = nowcast_all_mean_wis == min(nowcast_all_mean_wis, na.rm = T)
+    ) %>%
+    group_by(model, phase, nowcast_timing) %>%
+    summarize(
+      R_mean_wis = mean(R_mean_wis, na.rm = T),
+      R_mean_wis_over = mean(R_mean_wis_over, na.rm = T),
+      R_mean_wis_disp = mean(R_mean_wis_disp, na.rm = T),
+      R_mean_wis_under = mean(R_mean_wis_under, na.rm = T),
+      R_percent_best = sum(R_best, na.rm = T) / sum(!is.na(R_best)),
+      nowcast_all_mean_wis = mean(nowcast_all_mean_wis, na.rm = T),
+      nowcast_all_mean_wis_over = mean(nowcast_all_mean_wis_over, na.rm = T),
+      nowcast_all_mean_wis_disp = mean(nowcast_all_mean_wis_disp, na.rm = T),
+      nowcast_all_mean_wis_under = mean(nowcast_all_mean_wis_under, na.rm = T),
+      nowcast_all_percent_best = sum(nowcast_all_best, na.rm = T) / sum(!is.na(nowcast_all_best)),
+      .groups = "keep"
+    ) |> 
+    group_by(phase, nowcast_timing) |> 
+    # normalize
+    mutate(
+      R_mean_wis_over = round(100 * R_mean_wis_over / R_mean_wis),
+      R_mean_wis_disp = round(100 * R_mean_wis_disp / R_mean_wis),
+      R_mean_wis_under = round(100 * R_mean_wis_under / R_mean_wis),
+      R_percent_best = 100 * R_percent_best / sum(R_percent_best, na.rm = T),
+      nowcast_all_mean_wis_over = round(100 * nowcast_all_mean_wis_over / nowcast_all_mean_wis),
+      nowcast_all_mean_wis_disp = round(100 * nowcast_all_mean_wis_disp / nowcast_all_mean_wis),
+      nowcast_all_mean_wis_under = round(100 * nowcast_all_mean_wis_under / nowcast_all_mean_wis),
+      nowcast_all_percent_best = 100 * nowcast_all_percent_best / sum(nowcast_all_percent_best, na.rm = T)
+    ) |> 
+    mutate(
+      across(c(R_mean_wis, nowcast_all_mean_wis), round, digits = 3),
+      across(c(R_percent_best, nowcast_all_percent_best), round, digits = 0)
+    ) |> 
+    mutate(across(c(
+      R_percent_best, R_mean_wis_over, R_mean_wis_disp, R_mean_wis_under,
+      nowcast_all_percent_best, nowcast_all_mean_wis_over, nowcast_all_mean_wis_disp, nowcast_all_mean_wis_under,
+    ), function(x) paste0(x, "%"))) |> 
+    pivot_wider(names_from = model, id_cols = c(phase, nowcast_timing),
+                values_from = c("R_mean_wis", "R_percent_best", "nowcast_all_mean_wis", "nowcast_all_percent_best")) |> 
+    arrange(phase, nowcast_timing) |> 
+    ungroup() |> 
+    mutate(
+      phase = ifelse(!is.na(lag(phase)) & phase==lag(phase), " ", as.character(phase)),
+      nowcast_timing = ifelse(!is.na(lag(nowcast_timing)) & nowcast_timing==lag(nowcast_timing), " ", as.character(nowcast_timing)),
+    ) |> 
+    rename(Phase = phase, Lag = nowcast_timing) |> 
+    select(Phase, Lag,
+           contains(paste0(outcome_name,"_")) & ends_with(names_shortlist[1]),
+           contains(paste0(outcome_name,"_")) & ends_with(names_shortlist[2]),
+           contains(paste0(outcome_name,"_")) & ends_with(names_shortlist[3])
+    )
+  return(wide_df)
+}
+
+table_as_latex <- function(table, outcome_name, models, R_models, timings) {
+  n_cols <- length(unique(paste(models, R_models)))
+  
+  heading <- paste(
+    "\\centering",
+    "\\noindent",
+    paste0("\\begin{tabular}{lc", paste(rep("cc", n_cols), collapse = ""), "}"),
+    "\\toprule",
+    sep = "\n"
+  )
+  
+  top_columns <- paste(
+    "Phase & Lag &",
+    paste(paste0("\\multicolumn{2}{c}{",model_names_short_1st[paste(models, R_models)],"}"), collapse = " & "),
+    "\\\\"
+  )
+  
+  top_columns_second_row <- paste(
+    " & \\footnotesize{[days]} &",
+    paste(paste0("\\multicolumn{2}{c}{",model_names_short_2nd[paste(models, R_models)],"}"), collapse = " & "),
+    "\\\\"
+  )
+  
+  top_columns_cmidrule <- paste(
+    paste0("\\cmidrule(lr){", paste0(seq(3, length.out = n_cols, by = 2),"-",seq(4, length.out = n_cols, by = 2)), "}"),
+    collapse = " ")
+  
+  WIS_outcome <- ifelse(
+    outcome_name == "nowcast_all",
+    "(\\hat{N}_t)","(R_t)"
+  )
+  
+  sub_columns <- paste(
+    "& &",
+    paste(rep(paste0("$\\overline{\\text{WIS}}",WIS_outcome,"$ & $\\%^\\text{best}$"), n_cols), collapse = " & "),
+    "\\\\\n"
+  )
+  
+  table_contents <- sapply(
+    split(1:nrow(table), cut(1:nrow(table), breaks = seq(0, nrow(table), by = length(timings)))),
+    function(x) xtable::xtable(table[x,]) |> 
+      print(include.rownames = FALSE, only.contents = TRUE, include.colnames = FALSE, comment = FALSE, print.results = FALSE, hline.after = NULL)
+  )
+  table_content <-  paste(table_contents, collapse = "\n \\addlinespace \n")
+  
+  closure <- paste(
+    "\\bottomrule",
+    "\\end{tabular}",
+    sep = "\n"
+  )
+  
+  return(paste(heading, top_columns, top_columns_second_row, top_columns_cmidrule, sub_columns, "\\midrule", table_content, closure, sep = "\n"))
+}
+
+make_performance_table_latex <- function(outcome_name, models, R_models, timings = c(
+  "In same week" =  "0-6",
+  "One week after" = "7-13",
+  "Two weeks after" = "14-20"
+)) {
+  table <- make_performance_table(
+    outcome_name = outcome_name,
+    models = models,
+    R_models = R_models,
+    timings = timings
+  )
+  return(table_as_latex(table, outcome_name, models, R_models, timings = timings))
 }

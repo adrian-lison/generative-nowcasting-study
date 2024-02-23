@@ -229,7 +229,7 @@ sim[[sim_index]][["linelist"]] %>%
   filter(Event != "Hospitalisation") %>% 
   group_by(Event) %>% 
   complete(time = 0:200, fill = list(n = 0)) %>% 
-  mutate(time = as.Date(0) + time) %>% 
+  mutate(time = zoo::as.Date(0) + time) %>% 
   ggplot() +
   geom_line(aes(x = time, y = n, color = Event)) +
   theme_bw() +
@@ -238,7 +238,7 @@ sim[[sim_index]][["linelist"]] %>%
   ylab("Number of cases") +
   scale_x_date(expand = c(0, 0)) +
   scale_color_manual(values = c("red", "blue", "black")) +
-  coord_cartesian(xlim = as.Date(0) + c(30, 200)) +
+  coord_cartesian(xlim = zoo::as.Date(0) + c(30, 200)) +
   facet_wrap(~Event, ncol = 1)
 
 ggsave(here::here("figures", "paper", "sim_wave2_example_trajectory.pdf"), width = 10, height = 5)
