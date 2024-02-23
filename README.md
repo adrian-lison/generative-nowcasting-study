@@ -1,6 +1,6 @@
 # Generative Bayesian modeling to nowcast the effective reproduction number from line list data with missing symptom onset dates
 
-[![DOI](https://zenodo.org/badge/681616817.svg)](https://zenodo.org/badge/latestdoi/681616817)
+[![DOI](https://zenodo.org/badge/681616817.svg)](https://zenodo.org/doi/10.5281/zenodo.8279675)
 
 Adrian Lison (1,2), Sam Abbott (3), Jana Huisman (4), and Tanja Stadler (1,2)
 
@@ -32,13 +32,15 @@ The various nowcasting models used by the different approaches compared in this 
 To rerun the analyses, the nowcasting models can be fitted to the synthetic data by running
 [code/nowcast_synthetic.Rmd](code/nowcast_synthetic.Rmd). 
 To fit the nowcasting models to the real-world data (requires data provided by FOPH), run the code in [code/nowcast_switzerland_hosp_symp.Rmd](code/nowcast_switzerland_hosp_symp.Rmd).
+To run the sensitivity analysis for incubation period misspecification, run
+[code/nowcast_sensitivity_incubation.Rmd](code/nowcast_sensitivity_incubation.Rmd). 
 
 Note that rerunning the model fitting involves considerable computation and may require the use of an HPC cluster.
 
 #### Evaluation of results
 The nowcasting results from the different approaches are stored in subfolders in [results](results). Results are stored in compressed form as *RDS* files.
 
-Approaches are evaluated on the synthetic data in [code/validation_synthetic.Rmd](code/validation_synthetic.Rmd) and on the real-world data in [code/validation_switzerland_hosp_symp.Rmd](code/validation_switzerland_hosp_symp.Rmd).
+Approaches are evaluated on the synthetic data in [code/validation_synthetic.Rmd](code/validation_synthetic.Rmd) and on the real-world data in [code/validation_switzerland_hosp_symp.Rmd](code/validation_switzerland_hosp_symp.Rmd). The sensitivity analysis is evaluated in [code/validation_sensitivity.Rmd](code/validation_sensitivity.Rmd).
 
 Figures from the manuscript are stored in [figures/paper](figures/paper).
 
