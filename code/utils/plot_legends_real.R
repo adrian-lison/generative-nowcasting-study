@@ -17,14 +17,15 @@ symptom_onset_legend <- cowplot::get_legend(
     scale_fill_manual(values = c("white", "darkgrey", "white"), name = "Symptom onsets")
 )
 
-R_legend <- cowplot::get_legend(
-  ggplot(data = data.frame(class = forcats::fct_inorder(c("Consolidated estimate", " ", ""), ordered = T), x = 1:3, y = rnorm(3)), aes(x = x, y = y)) +
-    geom_col(aes(fill = class)) + geom_line(aes(color = class), linetype = "dashed") +
-    theme_bw() +
-    theme(legend.position = "left") +
-    scale_color_manual(values = c("black", "white", "white"), name = "Reproduction number") +
-    scale_fill_manual(values = c("white", "white", "white"), name = "Reproduction number")
-)
+R_legend <- element_blank()
+# R_legend <- cowplot::get_legend(
+#   ggplot(data = data.frame(class = forcats::fct_inorder(c("Consolidated estimate", " ", ""), ordered = T), x = 1:3, y = rnorm(3)), aes(x = x, y = y)) +
+#     geom_col(aes(fill = class)) + geom_line(aes(color = class), linetype = "dashed") +
+#     theme_bw() +
+#     theme(legend.position = "left") +
+#     scale_color_manual(values = c("black", "white", "white"), name = "Reproduction number") +
+#     scale_fill_manual(values = c("white", "white", "white"), name = "Reproduction number")
+# )
 
 pattern_legend <- cowplot::get_legend(
   ggplot(data = data.frame(class = forcats::fct_inorder(c("Overprediction", "Dispersion", "Underprediction"), ordered = T), x = 3, y = rnorm(3)), aes(x=x, y = y)) +

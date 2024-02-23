@@ -140,7 +140,7 @@ source(here::here("code","utils","plot_legends_real.R"))
 ```{r, fig.width = 10, fig.height = 12}
 save_plots <- TRUE
 
-plot_validation_select(dataset_id = 1,
+plot_v <- plot_validation_select(dataset_id = 1,
                     models = c("fully_stepwise", "fully_generative"),
                     R_models = "renewal",
                     feather_days = feather_days,
@@ -155,14 +155,15 @@ plot_validation_select(dataset_id = 1,
 
 if (save_plots) {
   ggsave(
-    here::here("figures","paper","switzerland_feather_Nt.pdf"),
-    width = 10, height = 12
-  )}
+    here::here("figures","paper","switzerland_feather_Nt.pdf"), plot = plot_v, width = 10, height = 12
+  )
+  ragg_save_TIFF(the_plot = plot_v, here::here("figures","paper","switzerland_feather_Nt.tiff"), width = 5, height = 6, units = "in", pointsize = 20, res = 500, scaling = 0.5, compression = "lzw", background = "white")
+  }
 ```
 
 ### Plot results for Rt
 ```{r, fig.width = 10, fig.height = 9.5}
-plot_validation_select(dataset_id = 1,
+plot_v <- plot_validation_select(dataset_id = 1,
                     models = c("R_direct", "fully_stepwise", "fully_generative"),
                     R_models = "renewal",
                     feather_days = feather_days,
@@ -177,7 +178,8 @@ plot_validation_select(dataset_id = 1,
 
 if (save_plots) {
   ggsave(
-    here::here("figures","paper","switzerland_feather_Rt.pdf"),
-    width = 10, height = 9.5
-  )}
+    here::here("figures","paper","switzerland_feather_Rt.pdf"), plot = plot_v, width = 10, height = 9.5
+  )
+    ragg_save_TIFF(the_plot = plot_v, here::here("figures","paper","switzerland_feather_Rt.tiff"), width = 5, height = 4.75, units = "in", pointsize = 20, res = 500, scaling = 0.5, compression = "lzw", background = "white")
+  }
 ```
